@@ -2,6 +2,7 @@ import HAL  # type: ignore # noqa
 import GUI  # type: ignore # noqa
 from enum import Enum
 from dataclasses import dataclass, field
+from colorama import Fore, Style
 import numpy as np
 
 
@@ -82,6 +83,16 @@ class Map:
 
     def clean(self):
         self.__init__()
+
+
+def warn(text: str) -> None:
+    print(
+        f"{Fore.YELLOW}{Style.BRIGHT}[WARNING]{Style.RESET_ALL}{Fore.YELLOW} {text}{Fore.RESET}"
+    )
+
+
+def debug(text: str):
+    print(f"[{Fore.CYAN}{Style.BRIGHT}DEBUG{Style.RESET_ALL}]: {text}")
 
 
 print("\n" * 30)
