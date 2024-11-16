@@ -1,9 +1,16 @@
 import HAL  # type: ignore # noqa
 import GUI  # type: ignore # noqa
+import cv2
 from enum import Enum
 from dataclasses import dataclass, field
 from colorama import Fore, Style
+from copy import deepcopy
 import numpy as np
+
+from ompl import base as ob  # type: ignore
+from ompl import geometric as og  # type: ignore
+from functools import partial
+from typing import Any, Optional
 
 
 class ColorCode(Enum):
@@ -38,6 +45,10 @@ YAW_PRECISSION_FORWARDING = 0.05
 DISTANCE_PRECISSION = 2
 VECTOR_PRECISSION = DISTANCE_PRECISSION / 2
 ROBOT_YAW_DISPLACEMENT = 90
+
+TIME_TO_SOLVE = 90
+CIRCLE_SIZE = 3
+LINE_THICKNESS = 1
 
 
 @dataclass
@@ -87,33 +98,132 @@ class Coordinate:
         return cls(row=int(result[1]), col=int(result[0]))
 
 
+class OmplManager:
+
+    def __init__(self, mapping: np.ndarray, invalid_value: int):
+        self.mapping = mapping
+        self.invalid_value = invalid_value
+
+    def plan(self, src: Coordinate, dst: Coordinate) -> Optional[list[Coordinate]]:
+        space = ob.SE2StateSpace()
+
+        bounds = ob.RealVectorBounds(2)
+        bounds.setLow(0, 0)
+        bounds.setLow(1, 0)
+        bounds.setHigh(0, self.mapping.shape[0])
+        bounds.setHigh(1, self.mapping.shape[1])
+        space.setBounds(bounds)
+
+        si = ob.SpaceInformation(space)
+        validation_func = partial(
+            self._is_state_valid, self.mapping, self.invalid_value
+        )
+        si.setStateValidityChecker(ob.StateValidityCheckerFn(validation_func))
+
+        start = ob.State(space)
+        start().setX(float(src.row))
+        start().setY(float(src.col))
+        start().setYaw(src.yaw)
+
+        goal = ob.State(space)
+        goal().setX(float(dst.row))
+        goal().setY(float(dst.col))
+        goal().setYaw(dst.yaw)
+
+        pdef = ob.ProblemDefinition(si)
+        pdef.setStartAndGoalStates(start, goal)
+        planner = og.RRTConnect(si)
+        planner.setProblemDefinition(pdef)
+        planner.setup()
+
+        debug("Planning...")
+        solution = planner.solve(TIME_TO_SOLVE)
+
+        if solution:
+            debug("Solution Found")
+            printed_mat = pdef.getSolutionPath().printAsMatrix()
+            return self._parse_printed_matrix(printed_mat)
+
+        debug(f"Planning Failed: {solution}")
+        return None
+
+    @staticmethod
+    def _is_state_valid(
+        _mapping: np.ndarray, _invalid_value: float, state: Any
+    ) -> bool:
+        global MAP
+
+        x = int(state.getX())
+        y = int(state.getY())
+        try:
+            result = _mapping[x, y] != _invalid_value
+            color = ColorCode.GREEN.value if result else ColorCode.RED.value
+            MAP.circle(Coordinate(x, y), color)
+            MAP.show()
+
+            return result
+
+        except IndexError:
+            warn(f"Trying to access to value {x}, {y} which is not present on the map")
+            return False
+
+    @staticmethod
+    def _parse_printed_matrix(printed_mat: str) -> list[Coordinate]:
+        result = []
+        for line in printed_mat.splitlines():
+
+            if len(words := line.split(" ")) < 3:
+                continue
+
+            row, col, yaw = [int(float(val)) for val in words[:3]]
+            coord = Coordinate(row, col, yaw)
+            result.append(coord)
+
+        return result
+
+
 class Map:
 
     def __init__(self):
         self.map = GUI.getMap("/resources/exercises/amazon_warehouse/images/map.png")
 
         gui = (
-            np.ones((self.map.shape[0], self.map.shape[1]), dtype=int)
+            np.ones((self.map.shape[0], self.map.shape[1]), dtype=np.uint8)
             * ColorCode.GRAY.value
         )
         gui[np.all(self.map > [OCCUPIED_PIXEL] * 3, axis=-1)] = ColorCode.WHITE.value
         gui[np.all(self.map < [FREE_PIXEL] * 3, axis=-1)] = ColorCode.BLACK.value
-
+        self.parsed_map = deepcopy(gui)
         self.gui = gui
 
     def show(self):
         GUI.showNumpy(self.gui)
 
-    def keypoint(self, coord: Coordinate):
-        self.gui[
-            coord.row - KEYPOINT_SIZE : coord.row + KEYPOINT_SIZE,  # noqa
-            coord.col - KEYPOINT_SIZE : coord.col + KEYPOINT_SIZE,  # noqa
-        ] = KEYPOINT_COLOR
+    def keypoint(self, coord: Coordinate, color=KEYPOINT_COLOR):
+        if not isinstance(color, int):
+            raise ValueError("Invalid color received")
         border_size = KEYPOINT_SIZE + 1
         self.gui[
             coord.row - border_size : coord.row + border_size,  # noqa
             coord.col - border_size : coord.col + border_size,  # noqa
         ] = KEYPOINT_BORDER_COLOR
+
+        self.gui[
+            coord.row - KEYPOINT_SIZE : coord.row + KEYPOINT_SIZE,  # noqa
+            coord.col - KEYPOINT_SIZE : coord.col + KEYPOINT_SIZE,  # noqa
+        ] = color
+
+    def circle(self, coord: Coordinate, color: int = ColorCode.BLACK.value):
+        center = (coord.col, coord.row)
+        radius = CIRCLE_SIZE
+        cv2.circle(self.gui, center, radius, color, LINE_THICKNESS)
+
+    def connect(
+        self, src: Coordinate, dst: Coordinate, color: int = ColorCode.RED.value
+    ):
+        cv2.line(
+            self.gui, (src.col, src.row), (dst.col, dst.row), color, LINE_THICKNESS
+        )
 
     def clean(self):
         self.__init__()
@@ -174,8 +284,9 @@ class Navigation:
 
 def shortest_angle_distance_radians(a: float, b: float):
     """Calculates the shortest angular distance between two angles in radians.
-    This function ensures that the distance is minimized by accounting for the
-    circular nature of angular measurements."""
+        This function ensures that the distance is minimized br
+    cy accounting for the
+        circular nature of angular measurements."""
     a = a % (2 * np.pi)
     b = b % (2 * np.pi)
 
@@ -209,17 +320,25 @@ print("\n" * 30)
 print("=" * 30 + " Starting " + "=" * 30)
 
 mapping = Map()
-target = Coordinate(100, 350, np.pi)
-success = False
+MAP = mapping
+
 navigator = Navigation()
 navigator.wait_for_activation()
+target = Coordinate(row=100, col=300, yaw=0.0)
 mapping.keypoint(target)
 mapping.show()
 
-while True:
+ompl_man = OmplManager(mapping=mapping.parsed_map, invalid_value=ColorCode.BLACK.value)
 
-    if not success:
-        navigator.move_to(target)
-        success = True
-        debug("Success")
+result = ompl_man.plan(navigator.coords, target)
+
+if result is not None:
+    for idx, coord in enumerate(result[:-1]):
+        debug(f"{idx}. {coord}")
+        mapping.connect(coord, result[idx + 1])
+
+mapping.show()
+print("Map completed")
+
+while True:
     pass
