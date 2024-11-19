@@ -1,7 +1,7 @@
 import HAL  # type: ignore # noqa
 import GUI  # type: ignore # noqa
 import cv2
-from enum import Enum
+from enum import Enum, auto
 from dataclasses import dataclass, field
 from colorama import Fore, Style
 from copy import deepcopy
@@ -25,6 +25,12 @@ class ColorCode(Enum):
     VIOLET = 134
 
 
+class States(Enum):
+    PLANNING = auto()
+    GOING_TO_TARGET = auto()
+    FINISH = auto()
+
+
 OCCUPIED_PIXEL = 0.9
 FREE_PIXEL = 0.1
 KEYPOINT_SIZE = 2
@@ -37,18 +43,19 @@ REGISTRY_ROTATION = np.deg2rad(90)
 REGISTRY_TX = 207
 REGISTRY_TY = 145
 ROTATION_FORCE = 0.2
-ROTATION_FORCE_FORWARDING = 0.3
+ROTATION_FORCE_FORWARDING = 0.5
 VELOCITY = 0.2
 
-YAW_PRECISSION = 0.2
+YAW_PRECISSION = 0.1
 YAW_PRECISSION_FORWARDING = 0.05
-DISTANCE_PRECISSION = 2
+DISTANCE_PRECISSION = 5
 VECTOR_PRECISSION = DISTANCE_PRECISSION / 2
 ROBOT_YAW_DISPLACEMENT = 90
 
 TIME_TO_SOLVE = 90
 CIRCLE_SIZE = 3
 LINE_THICKNESS = 1
+ARROW_LENGTH = 30
 
 
 @dataclass
@@ -72,7 +79,7 @@ class Vector:
         if abs(module) < VECTOR_PRECISSION:
             return Vector(0, None)
 
-        alpha = np.arcsin(dy / module)
+        alpha = np.arctan2(dy, dx)
 
         return Vector(module, alpha)
 
@@ -225,6 +232,17 @@ class Map:
             self.gui, (src.col, src.row), (dst.col, dst.row), color, LINE_THICKNESS
         )
 
+    def arrow(self, coord: Coordinate, color: int = ColorCode.RED.value):
+        if coord.yaw is None:
+            raise ValueError("Yaw error cannot be none for drawing an arrow")
+
+        end_point = (
+            int(coord.col + ARROW_LENGTH * np.cos(coord.yaw)),
+            int(coord.row - ARROW_LENGTH * np.sin(coord.yaw)),
+        )
+
+        cv2.arrowedLine(self.gui, (coord.col, coord.row), end_point, color, LINE_THICKNESS)
+
     def clean(self):
         self.__init__()
 
@@ -258,6 +276,7 @@ class Navigation:
             src = self.coords
             target = Vector.from_coordinates(src, dst)
             yaw_error = shortest_angle_distance_radians(src.yaw, target.alpha)
+            # print(f"[{yaw_error:.2f}] {np.rad2deg(src.yaw):.2f} -> {np.rad2deg(target.alpha):.2f}")
 
             HAL.setW(yaw_error * ROTATION_FORCE)
 
@@ -327,18 +346,32 @@ navigator.wait_for_activation()
 target = Coordinate(row=100, col=300, yaw=0.0)
 mapping.keypoint(target)
 mapping.show()
-
 ompl_man = OmplManager(mapping=mapping.parsed_map, invalid_value=ColorCode.BLACK.value)
 
-result = ompl_man.plan(navigator.coords, target)
 
-if result is not None:
-    for idx, coord in enumerate(result[:-1]):
-        debug(f"{idx}. {coord}")
-        mapping.connect(coord, result[idx + 1])
-
-mapping.show()
-print("Map completed")
+state = States.PLANNING
 
 while True:
+
+    match state:
+
+        case States.PLANNING:
+
+            plan = ompl_man.plan(navigator.coords, target)
+
+            for idx, coord in enumerate(plan[:-1]):
+                debug(f"{idx}. {coord}")
+                mapping.connect(coord, plan[idx + 1])
+                mapping.arrow(plan[idx + 1])
+            mapping.show()
+
+            state = States.GOING_TO_TARGET
+
+        case States.GOING_TO_TARGET:
+            for coord in plan[1:]:
+                mapping.keypoint(coord, color=ColorCode.BLACK.value)
+                mapping.arrow(coord, color=ColorCode.BLACK.value)
+                mapping.show()
+                navigator.move_to(coord)
+            state = States.FINISH
     pass
