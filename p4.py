@@ -1,6 +1,7 @@
 import HAL  # type: ignore # noqa
 import GUI  # type: ignore # noqa
 import cv2
+import time
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from colorama import Fore, Style
@@ -39,15 +40,21 @@ KEYPOINT_BORDER_COLOR = ColorCode.ORANGE.value
 
 REGISTRY_SCALE_X = 21.5
 REGISTRY_SCALE_Y = 20
+
+ROBOT_SIZE_Y = 12
+ROBOT_SIZE_X = 12
+
+PRINT_ONLY_VALID_PATH = True
 REGISTRY_ROTATION = np.deg2rad(90)
 REGISTRY_TX = 207
 REGISTRY_TY = 145
 ROTATION_FORCE = 0.2
-ROTATION_FORCE_FORWARDING = 0.5
+ROTATION_FORCE_FORWARDING = 0.8
 VELOCITY = 0.2
 
 YAW_PRECISSION = 0.1
 YAW_PRECISSION_FORWARDING = 0.05
+
 DISTANCE_PRECISSION = 5
 VECTOR_PRECISSION = DISTANCE_PRECISSION / 2
 ROBOT_YAW_DISPLACEMENT = 90
@@ -56,6 +63,8 @@ TIME_TO_SOLVE = 90
 CIRCLE_SIZE = 3
 LINE_THICKNESS = 1
 ARROW_LENGTH = 30
+
+ompl_last_state: Optional[Any] = None
 
 
 @dataclass
@@ -158,14 +167,37 @@ class OmplManager:
     def _is_state_valid(
         _mapping: np.ndarray, _invalid_value: float, state: Any
     ) -> bool:
-        global MAP
+        global MAP, ompl_last_state
 
         x = int(state.getX())
         y = int(state.getY())
+
+        if ompl_last_state is None:
+            save_yaw = float(state.getYaw())
+
+        else:
+            new_state = Coordinate(row=x, col=y, yaw=None)
+            vec = Vector.from_coordinates(ompl_last_state, new_state)
+            save_yaw = vec.alpha
+
+        if save_yaw is None:
+            save_yaw = 0
+
+        ompl_last_state = Coordinate(row=x, col=y, yaw=save_yaw)
+        MAP.arrow(ompl_last_state, color=ColorCode.YELLOW.value)
+        rotation = np.rad2deg(save_yaw) - 90
+
         try:
-            result = _mapping[x, y] != _invalid_value
+
+            mask = np.zeros(_mapping.shape, dtype=np.uint8)
+            draw_rectangle(mask, 1, (x, y), ROBOT_SIZE_Y, ROBOT_SIZE_X, rotation, True)
+            masked_values = _mapping[mask == 1]
+            result = not np.any(masked_values == _invalid_value)
+
             color = ColorCode.GREEN.value if result else ColorCode.RED.value
-            MAP.circle(Coordinate(x, y), color)
+            draw_rectangle(
+                MAP.gui, color, (x, y), ROBOT_SIZE_Y, ROBOT_SIZE_X, rotation, False
+            )
             MAP.show()
 
             return result
@@ -241,7 +273,9 @@ class Map:
             int(coord.row - ARROW_LENGTH * np.sin(coord.yaw)),
         )
 
-        cv2.arrowedLine(self.gui, (coord.col, coord.row), end_point, color, LINE_THICKNESS)
+        cv2.arrowedLine(
+            self.gui, (coord.col, coord.row), end_point, color, LINE_THICKNESS
+        )
 
     def clean(self):
         self.__init__()
@@ -301,6 +335,35 @@ class Navigation:
         HAL.setW(0)
 
 
+def draw_rectangle(
+    dst,
+    color: int,
+    center: tuple[int, int],
+    width,
+    height,
+    rotation=0,
+    filled: bool = False,
+):
+    points = []
+
+    x, y = center
+    radius = np.sqrt((height / 2) ** 2 + (width / 2) ** 2)
+    angle = np.arctan2(height / 2, width / 2)
+    angles = [angle, -angle + np.pi, angle + np.pi, -angle]
+    rot_radians = (np.pi / 180) * -rotation
+
+    for angle in angles:
+        y_offset = -1 * radius * np.sin(angle + rot_radians)
+        x_offset = radius * np.cos(angle + rot_radians)
+        points.append((y + y_offset, x + x_offset))
+
+    points = np.array(points, dtype=np.int32)
+    if filled:
+        cv2.fillPoly(dst, [points], color)
+    else:
+        cv2.polylines(dst, [points], isClosed=True, color=color, thickness=1)
+
+
 def shortest_angle_distance_radians(a: float, b: float):
     """Calculates the shortest angular distance between two angles in radians.
         This function ensures that the distance is minimized br
@@ -343,7 +406,7 @@ MAP = mapping
 
 navigator = Navigation()
 navigator.wait_for_activation()
-target = Coordinate(row=100, col=300, yaw=0.0)
+target = Coordinate(row=50, col=300, yaw=0.0)
 mapping.keypoint(target)
 mapping.show()
 ompl_man = OmplManager(mapping=mapping.parsed_map, invalid_value=ColorCode.BLACK.value)
@@ -370,7 +433,7 @@ while True:
         case States.GOING_TO_TARGET:
             for coord in plan[1:]:
                 mapping.keypoint(coord, color=ColorCode.BLACK.value)
-                mapping.arrow(coord, color=ColorCode.BLACK.value)
+                mapping.arrow(coord, color=ColorCode.VIOLET.value)
                 mapping.show()
                 navigator.move_to(coord)
             state = States.FINISH
