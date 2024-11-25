@@ -135,12 +135,11 @@ class Coordinate:
     yaw: float = field(default=0.0)
 
     @classmethod
-    def from_world_coordinates(cls, x: float, y: float):
+    def from_world_coordinates(cls, x: float, y: float) -> "Coordinate":
         # ===================================
         # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
         # ===================================
-        """Creates a Vector from two Coordinate points by calculating the
-        distance and angle between them."""
+        """Converts the coordinates obtained from the robot into col-row based representation"""
         matrix = np.array(
             [
                 [np.cos(REGISTRY_ROTATION), -np.sin(REGISTRY_ROTATION), REGISTRY_TX],
@@ -326,7 +325,7 @@ class Map:
 
     # ================= ✒️ GUI Drawing Methods =========================
 
-    def keypoint(self, coord: Coordinate, color=KEYPOINT_COLOR):
+    def keypoint(self, coord: Coordinate, color=KEYPOINT_COLOR) -> None:
         """Draws a squared keypoint on the GUI"""
         if not isinstance(color, int):
             raise ValueError("Invalid color received")
@@ -343,7 +342,7 @@ class Map:
 
     def circle(
         self, coord: Coordinate, radius: float, color: int = ColorCode.BLACK.value
-    ):
+    ) -> None:
         """Draws a circle on the map at the specified coordinate."""
 
         center = (coord.col, coord.row)
@@ -351,13 +350,13 @@ class Map:
 
     def connect(
         self, src: Coordinate, dst: Coordinate, color: int = ColorCode.RED.value
-    ):
+    ) -> None:
         """Draws a line connecting two coordinates on the map."""
         cv2.line(
             self.gui, (src.col, src.row), (dst.col, dst.row), color, LINE_THICKNESS
         )
 
-    def arrow(self, coord: Coordinate, color: int = ColorCode.RED.value):
+    def arrow(self, coord: Coordinate, color: int = ColorCode.RED.value) -> None:
         """Draws an arrow on the map at the specified coordinate indicating the
         direction of movement."""
         if coord.yaw is None:
@@ -399,7 +398,7 @@ class Navigation:
             pass
         debug("Navigator is now active")
 
-    def move_to(self, dst: Coordinate, ignore_yaw: bool = True):
+    def move_to(self, dst: Coordinate, ignore_yaw: bool = True) -> None:
         # ===================================
         # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
         # ===================================
@@ -449,7 +448,7 @@ def draw_rectangle(
     height,
     rotation=0,
     filled: bool = False,
-):
+) -> None:
     """Draws a rectangle on the specified destination with given properties."""
     points = []
 
