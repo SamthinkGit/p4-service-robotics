@@ -1,7 +1,12 @@
+"""
+Warehouse Robot Navigation System
+=================================
+This module implements a navigation system for a warehouse robot.
+"""
+
 import HAL  # type: ignore # noqa
 import GUI  # type: ignore # noqa
 import cv2
-import time
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from colorama import Fore, Style
@@ -13,8 +18,24 @@ from ompl import geometric as og  # type: ignore
 from functools import partial
 from typing import Any, Optional
 
+# ==================================================================
+# [IMPORTANT NOTE]: Due to the size and number of comments and code,
+# important functions are indicated with this identifier:
+#
+# # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+#
+# Make your life easier by going direclty to those functions :D
+#
+# ==================================================================
+
+
+# =================== 🛠️  CONSTANTS 🛠️  =======================
+
 
 class ColorCode(Enum):
+    """Defines color codes used for map visualization and robot state
+    representation."""
+
     BLACK = 0
     GRAY = 100
     WHITE = 127
@@ -27,8 +48,13 @@ class ColorCode(Enum):
 
 
 class States(Enum):
+    """Represents the different operational states of the FSM"""
+
     PLANNING = auto()
     GOING_TO_TARGET = auto()
+    LIFT = auto()
+    PLANNING_TO_UNLIFT = auto()
+    CARRYING = auto()
     FINISH = auto()
 
 
@@ -41,8 +67,6 @@ KEYPOINT_BORDER_COLOR = ColorCode.ORANGE.value
 REGISTRY_SCALE_X = 21.5
 REGISTRY_SCALE_Y = 20
 
-ROBOT_SIZE_Y = 12
-ROBOT_SIZE_X = 12
 
 PRINT_ONLY_VALID_PATH = True
 REGISTRY_ROTATION = np.deg2rad(90)
@@ -54,26 +78,34 @@ VELOCITY = 0.2
 
 YAW_PRECISSION = 0.1
 YAW_PRECISSION_FORWARDING = 0.05
+FINAL_YAW_PRECISSION = 0.05
 
 DISTANCE_PRECISSION = 5
 VECTOR_PRECISSION = DISTANCE_PRECISSION / 2
 ROBOT_YAW_DISPLACEMENT = 90
 
 TIME_TO_SOLVE = 90
-CIRCLE_SIZE = 3
 LINE_THICKNESS = 1
 ARROW_LENGTH = 30
+LIFTING_ANGLE = 90
 
 ompl_last_state: Optional[Any] = None
 
 
+# =================== ✨ Core Modules ✨ =======================
 @dataclass
 class Vector:
+    """Represents a directional vector with magnitude and angle. It is mainly
+    focused to be used with local navigation"""
+
     module: float
     alpha: float
 
     @classmethod
     def from_coordinates(cls, src: "Coordinate", dst: "Coordinate") -> "Vector":
+        """Creates a Vector from two Coordinate points by calculating the
+        distance and angle between them."""
+
         dx = dst.col - src.col
         dy = dst.row - src.row
 
@@ -95,12 +127,20 @@ class Vector:
 
 @dataclass
 class Coordinate:
+    """Wrapper for unifiying OpenCV, axis-based and robot coordinates as a data
+    structure"""
+
     row: int
     col: int
     yaw: float = field(default=0.0)
 
     @classmethod
     def from_world_coordinates(cls, x: float, y: float):
+        # ===================================
+        # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+        # ===================================
+        """Creates a Vector from two Coordinate points by calculating the
+        distance and angle between them."""
         matrix = np.array(
             [
                 [np.cos(REGISTRY_ROTATION), -np.sin(REGISTRY_ROTATION), REGISTRY_TX],
@@ -115,12 +155,18 @@ class Coordinate:
 
 
 class OmplManager:
+    """Manager for simplifying path planning using the OMPL library."""
 
     def __init__(self, mapping: np.ndarray, invalid_value: int):
         self.mapping = mapping
         self.invalid_value = invalid_value
 
     def plan(self, src: Coordinate, dst: Coordinate) -> Optional[list[Coordinate]]:
+        # ===================================
+        # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+        # ===================================
+        """Plans a path from a source Coordinate to a destination Coordinate
+        using the RRTConnect algorithm from the OMPL library."""
         space = ob.SE2StateSpace()
 
         bounds = ob.RealVectorBounds(2)
@@ -167,33 +213,47 @@ class OmplManager:
     def _is_state_valid(
         _mapping: np.ndarray, _invalid_value: float, state: Any
     ) -> bool:
+        # ===================================
+        # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+        # ===================================
+        """Checks if a given state is valid by ensuring it does not collide with
+        obstacles in the mapping."""
+
         global MAP, ompl_last_state
 
+        # Get the coordinates
         x = int(state.getX())
         y = int(state.getY())
 
+        # If it is the first vector, just save it
         if ompl_last_state is None:
             save_yaw = float(state.getYaw())
 
+        # If there are more, compute the yaw from the previous to the current
         else:
             new_state = Coordinate(row=x, col=y, yaw=None)
             vec = Vector.from_coordinates(ompl_last_state, new_state)
             save_yaw = vec.alpha
 
+        # If the yaw could't be resolved fallback to 0
         if save_yaw is None:
             save_yaw = 0
 
+        # Print the obtained vector
         ompl_last_state = Coordinate(row=x, col=y, yaw=save_yaw)
         MAP.arrow(ompl_last_state, color=ColorCode.YELLOW.value)
-        rotation = np.rad2deg(save_yaw) - 90
 
+        # We rotate the yaw 90deg because we consider 0 at 90º from the X-axis
+        rotation = np.rad2deg(save_yaw) - 90
         try:
 
+            # Build a mask and search if there are any obstacles
             mask = np.zeros(_mapping.shape, dtype=np.uint8)
             draw_rectangle(mask, 1, (x, y), ROBOT_SIZE_Y, ROBOT_SIZE_X, rotation, True)
             masked_values = _mapping[mask == 1]
             result = not np.any(masked_values == _invalid_value)
 
+            # Print the result and return it
             color = ColorCode.GREEN.value if result else ColorCode.RED.value
             draw_rectangle(
                 MAP.gui, color, (x, y), ROBOT_SIZE_Y, ROBOT_SIZE_X, rotation, False
@@ -208,9 +268,12 @@ class OmplManager:
 
     @staticmethod
     def _parse_printed_matrix(printed_mat: str) -> list[Coordinate]:
+        """Parses a printed matrix string from the OMPL library into a list of
+        Coordinate instances."""
         result = []
         for line in printed_mat.splitlines():
 
+            # We assume the matrix will always contain (x, y, yaw)
             if len(words := line.split(" ")) < 3:
                 continue
 
@@ -222,8 +285,12 @@ class OmplManager:
 
 
 class Map:
+    """Represents the warehouse map and provides utilities for visualization and editing."""
 
     def __init__(self):
+        # ===================================
+        # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+        # ===================================
         self.map = GUI.getMap("/resources/exercises/amazon_warehouse/images/map.png")
 
         gui = (
@@ -235,10 +302,32 @@ class Map:
         self.parsed_map = deepcopy(gui)
         self.gui = gui
 
+    def erase(self, center: tuple[int, int], size: tuple[int, int], rotation):
+        """Erases a rectangular area on the map's GUI representation."""
+        erase_func = partial(
+            draw_rectangle,
+            color=ColorCode.WHITE.value,
+            center=center,
+            width=size[0],
+            height=size[1],
+            rotation=rotation,
+            filled=True,
+        )
+        erase_func(self.parsed_map)
+        erase_func(self.gui)
+
     def show(self):
+        """Displays the current state of the map GUI."""
         GUI.showNumpy(self.gui)
 
+    def clean(self):
+        """Resets the map to its initial state."""
+        self.__init__()
+
+    # ================= ✒️ GUI Drawing Methods =========================
+
     def keypoint(self, coord: Coordinate, color=KEYPOINT_COLOR):
+        """Draws a squared keypoint on the GUI"""
         if not isinstance(color, int):
             raise ValueError("Invalid color received")
         border_size = KEYPOINT_SIZE + 1
@@ -252,19 +341,25 @@ class Map:
             coord.col - KEYPOINT_SIZE : coord.col + KEYPOINT_SIZE,  # noqa
         ] = color
 
-    def circle(self, coord: Coordinate, color: int = ColorCode.BLACK.value):
+    def circle(
+        self, coord: Coordinate, radius: float, color: int = ColorCode.BLACK.value
+    ):
+        """Draws a circle on the map at the specified coordinate."""
+
         center = (coord.col, coord.row)
-        radius = CIRCLE_SIZE
         cv2.circle(self.gui, center, radius, color, LINE_THICKNESS)
 
     def connect(
         self, src: Coordinate, dst: Coordinate, color: int = ColorCode.RED.value
     ):
+        """Draws a line connecting two coordinates on the map."""
         cv2.line(
             self.gui, (src.col, src.row), (dst.col, dst.row), color, LINE_THICKNESS
         )
 
     def arrow(self, coord: Coordinate, color: int = ColorCode.RED.value):
+        """Draws an arrow on the map at the specified coordinate indicating the
+        direction of movement."""
         if coord.yaw is None:
             raise ValueError("Yaw error cannot be none for drawing an arrow")
 
@@ -277,11 +372,11 @@ class Map:
             self.gui, (coord.col, coord.row), end_point, color, LINE_THICKNESS
         )
 
-    def clean(self):
-        self.__init__()
+    # ==============================================================
 
 
 class Navigation:
+    """Handles robot navigation and movement."""
 
     @property
     def yaw(self) -> float:
@@ -299,21 +394,27 @@ class Navigation:
         return result
 
     def wait_for_activation(self):
+        """Waits until the navigation system is activated and ready for use."""
         while self.yaw is None:
             pass
         debug("Navigator is now active")
 
-    def move_to(self, dst: Coordinate):
+    def move_to(self, dst: Coordinate, ignore_yaw: bool = True):
+        # ===================================
+        # 🔥 >>>>    CORE FUNCTION    <<<< 🔥
+        # ===================================
+        """Moves the robot to the specified destination coordinate, adjusting
+        yaw and distance as needed."""
 
+        # Rotate the robot to the next point
         yaw_error = float("inf")
         while abs(yaw_error) > YAW_PRECISSION:
             src = self.coords
             target = Vector.from_coordinates(src, dst)
             yaw_error = shortest_angle_distance_radians(src.yaw, target.alpha)
-            # print(f"[{yaw_error:.2f}] {np.rad2deg(src.yaw):.2f} -> {np.rad2deg(target.alpha):.2f}")
-
             HAL.setW(yaw_error * ROTATION_FORCE)
 
+        # Go to the next point
         distance = float("inf")
         while abs(distance) > DISTANCE_PRECISSION:
             src = self.coords
@@ -327,7 +428,12 @@ class Navigation:
 
         HAL.setV(0)
         yaw_error = float("inf")
-        while abs(yaw_error) > YAW_PRECISSION:
+
+        if ignore_yaw:
+            yaw_error = 0
+
+        # Reorient as specified (deactivated by default)
+        while abs(yaw_error) > FINAL_YAW_PRECISSION:
             src = self.coords
             yaw_error = shortest_angle_distance_radians(src.yaw, dst.yaw)
             HAL.setW(yaw_error * ROTATION_FORCE)
@@ -344,6 +450,7 @@ def draw_rectangle(
     rotation=0,
     filled: bool = False,
 ):
+    """Draws a rectangle on the specified destination with given properties."""
     points = []
 
     x, y = center
@@ -366,9 +473,8 @@ def draw_rectangle(
 
 def shortest_angle_distance_radians(a: float, b: float):
     """Calculates the shortest angular distance between two angles in radians.
-        This function ensures that the distance is minimized br
-    cy accounting for the
-        circular nature of angular measurements."""
+    This function ensures that the distance is minimized by accounting for the
+    circular nature of angular measurements."""
     a = a % (2 * np.pi)
     b = b % (2 * np.pi)
 
@@ -388,29 +494,57 @@ def displace_angle(initial, displacement):
     return (result + np.pi) % (2 * np.pi) - np.pi
 
 
+# ======================= DEBUGGING =============================
 def warn(text: str) -> None:
+    """Outputs a warning message to the console with formatting."""
     print(
         f"{Fore.YELLOW}{Style.BRIGHT}[WARNING]{Style.RESET_ALL}{Fore.YELLOW} {text}{Fore.RESET}"
     )
 
 
 def debug(text: str):
+    """Outputs a debug message to the console with formatting."""
     print(f"[{Fore.CYAN}{Style.BRIGHT}DEBUG{Style.RESET_ALL}]: {text}")
 
 
+# ======================= Initialization =============================
+
 print("\n" * 30)
 print("=" * 30 + " Starting " + "=" * 30)
+
+shelves = [
+    (3.728, 0.579),  # Shelve 1
+    (3.728, -1.242),  # Shelve 2
+    (3.728, -3.039),  # Shelve 3
+    (3.728, -4.827),  # Shelve 4
+    (3.728, -6.781),  # Shelve 5
+    (3.728, -8.665),  # Shelve 6
+]
+
+# ====================================================
+# Target Selection
+shelve_id = 5
+move_to = Coordinate(row=215, col=350, yaw=0.0)
+# ===================================================
+
+
+x, y = shelves[shelve_id - 1]
+target = Coordinate.from_world_coordinates(x, y)
+target.yaw = np.deg2rad(LIFTING_ANGLE)
+second_target = move_to
 
 mapping = Map()
 MAP = mapping
 
 navigator = Navigation()
 navigator.wait_for_activation()
-target = Coordinate(row=50, col=300, yaw=0.0)
 mapping.keypoint(target)
 mapping.show()
 ompl_man = OmplManager(mapping=mapping.parsed_map, invalid_value=ColorCode.BLACK.value)
 
+# ======= ROBOT SIZE (NON-CONSTANT) ========
+ROBOT_SIZE_Y = 12
+ROBOT_SIZE_X = 12
 
 state = States.PLANNING
 
@@ -420,21 +554,76 @@ while True:
 
         case States.PLANNING:
 
+            mapping.keypoint(target, color=ColorCode.GRAY.value)
             plan = ompl_man.plan(navigator.coords, target)
 
             for idx, coord in enumerate(plan[:-1]):
                 debug(f"{idx}. {coord}")
                 mapping.connect(coord, plan[idx + 1])
-                mapping.arrow(plan[idx + 1])
+                mapping.circle(coord, radius=10, color=ColorCode.YELLOW.value)
+
+            mapping.arrow(target, color=ColorCode.VIOLET.value)
             mapping.show()
 
             state = States.GOING_TO_TARGET
 
         case States.GOING_TO_TARGET:
-            for coord in plan[1:]:
+
+            for coord in plan[1:-1]:
                 mapping.keypoint(coord, color=ColorCode.BLACK.value)
-                mapping.arrow(coord, color=ColorCode.VIOLET.value)
                 mapping.show()
                 navigator.move_to(coord)
+
+            navigator.move_to(target, ignore_yaw=False)
+
+            state = States.LIFT
+
+        case States.LIFT:
+            ROBOT_SIZE_Y = 47
+            ROBOT_SIZE_X = 24
+
+            HAL.lift()
+            mapping.clean()
+            coords = navigator.coords
+            mapping.erase(
+                (coords.row, coords.col),
+                (ROBOT_SIZE_Y, ROBOT_SIZE_X),
+                rotation=0,
+            )
+            mapping.show()
+            ompl_man = OmplManager(
+                mapping=mapping.parsed_map, invalid_value=ColorCode.BLACK.value
+            )
+
+            debug("Lifting Completed")
+            state = States.PLANNING_TO_UNLIFT
+
+        case States.PLANNING_TO_UNLIFT:
+
+            mapping.keypoint(second_target, color=ColorCode.GRAY.value)
+            plan = ompl_man.plan(navigator.coords, second_target)
+
+            for idx, coord in enumerate(plan[:-1]):
+                debug(f"{idx}. {coord}")
+                mapping.connect(coord, plan[idx + 1])
+                mapping.circle(coord, radius=27, color=ColorCode.YELLOW.value)
+
+            mapping.arrow(second_target, color=ColorCode.VIOLET.value)
+            mapping.show()
+
+            state = States.CARRYING
+
+        case States.CARRYING:
+
+            for coord in plan[1:-1]:
+                mapping.keypoint(coord, color=ColorCode.BLACK.value)
+                mapping.show()
+                navigator.move_to(coord)
+
+            navigator.move_to(second_target, ignore_yaw=False)
+
+            HAL.putdown()
+            mapping.clean()
+            mapping.show()
+            debug("Routine Completed")
             state = States.FINISH
-    pass
